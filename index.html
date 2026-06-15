@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoJSON Viewer & Search</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 50px;
+            z-index: 1000;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 300px;
+        }
+        input[type="file"], input[type="text"], button {
+            padding: 8px;
+            font-size: 14px;
+        }
+        button {
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <label for="geojson-file"><strong>1. Load Custom GeoJSON (Optional):</strong></label>
+        <input type="file" id="geojson-file" accept=".geojson,.json">
+        
+        <label for="search-input"><strong>2. Search Properties:</strong></label>
+        <div style="display: flex; gap: 5px;">
+            <input type="text" id="search-input" placeholder="Enter keyword..." style="flex-grow: 1;">
+            <button id="search-btn">Search</button>
+        </div>
+        <small id="status-text" style="color: #666;">Loading default map...</small>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script>
+        // 1. Initialize the map and add OpenStreetMap base layer
+        const map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 22,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let geoJsonLayer = null;
+
+        // Default and Highlight styles for features
+        const defaultStyle = { color: "#3388ff", weight: 2, fillOpacity: 0.2 };
+        const highlightStyle = { color: "#ff0000", weight: 5, fillOpacity: 0.6 };
+        
+        // Default marker icon vs Highlight marker icon (for points)
+        const defaultIcon = new L.Icon.Default();
+        const highlightIcon = new L.Icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            shadowSize: [41, 41]
+        });
+
+        const statusText = document.getElementById('status-text');
+
+        // --- NEW: Reusable function to render GeoJSON data ---
+        function renderGeoJSON(data) {
+            // Remove existing layer if there is one
+            if (geoJsonLayer) {
+                map.removeLayer(geoJsonLayer);
+            }
+
+            // Render new GeoJSON onto the map
+            geoJsonLayer = L.geoJSON(data, {
+                style: defaultStyle,
+                onEachFeature: function(feature, layer) {
+                    // Add a popup showing all properties for easy reading
+                    if (feature.properties) {
+                        let popupContent = "<div style='max-height:200px; overflow-y:auto;'><b>Properties:</b><br>";
+                        for (let key in feature.properties) {
+                            popupContent += `<b>${key}:</b> ${feature.properties[key]}<br>`;
+                        }
+                        popupContent += "</div>";
+                        layer.bindPopup(popupContent);
+                    }
+                }
+            }).addTo(map);
+
+            // Zoom map to fit the loaded data
+            map.fitBounds(geoJsonLayer.getBounds());
+        }
+
+        // --- NEW: Fetch default 'asg.geojson' on startup ---
+        fetch('asg.geojson')
+            .then(response => {
+                if (!response.ok) throw new Error("File not found or HTTP error.");
+                return response.json();
+            })
+            .then(data => {
+                renderGeoJSON(data);
+                statusText.innerText = "Default 'asg.geojson' loaded successfully.";
+            })
+            .catch(error => {
+                console.error("Error loading default GeoJSON:", error);
+                statusText.innerText = "Could not load 'asg.geojson'. Please upload a file.";
+            });
+
+        // 2. Handle Local File Upload (Overrides default)
+        document.getElementById('geojson-file').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    renderGeoJSON(data); // Use the reusable function
+                    statusText.innerText = "Custom GeoJSON loaded successfully.";
+                } catch (error) {
+                    alert("Error parsing GeoJSON. Please ensure the file is valid JSON.");
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // 3. Handle Search Functionality
+        document.getElementById('search-btn').addEventListener('click', function() {
+            if (!geoJsonLayer) {
+                alert("Please wait for the GeoJSON to load or upload a file first.");
+                return;
+            }
+
+            const searchTerm = document.getElementById('search-input').value.toLowerCase().trim();
+            if (!searchTerm) return;
+
+            let matchCount = 0;
+            const matchBounds = L.latLngBounds();
+
+            geoJsonLayer.eachLayer(function(layer) {
+                const props = layer.feature.properties;
+                let isMatch = false;
+
+                // Iterate through all properties to find a substring match
+                if (props) {
+                    for (let key in props) {
+                        if (props[key] && props[key].toString().toLowerCase().includes(searchTerm)) {
+                            isMatch = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Apply highlighting if matched, otherwise reset to default
+                if (isMatch) {
+                    matchCount++;
+                    
+                    // Handle style for Polygons/Lines
+                    if (layer.setStyle) {
+                        layer.setStyle(highlightStyle);
+                    }
+                    // Handle style for Point markers
+                    if (layer.setIcon) {
+                        layer.setIcon(highlightIcon);
+                    }
+
+                    // Expand bounds to include this match
+                    if (layer.getBounds) {
+                        matchBounds.extend(layer.getBounds());
+                    } else if (layer.getLatLng) {
+                        matchBounds.extend(layer.getLatLng());
+                    }
+                } else {
+                    // Reset non-matches
+                    if (layer.setStyle) {
+                        layer.setStyle(defaultStyle);
+                    }
+                    if (layer.setIcon) {
+                        layer.setIcon(defaultIcon);
+                    }
+                }
+            });
+
+            // Update UI and camera based on results
+            if (matchCount > 0) {
+                statusText.innerText = `Found ${matchCount} match(es).`;
+                if (matchBounds.isValid()) {
+                    // ALLOW MAP TO ZOOM ALL THE WAY IN TO LEVEL 19
+                    map.fitBounds(matchBounds, { padding: [20, 20], maxZoom: 22 });
+                }
+            } else {
+                statusText.innerText = "No matches found.";
+            }
+        });
+
+        // Trigger search on 'Enter' key
+        document.getElementById('search-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('search-btn').click();
+            }
+        });
+    </script>
+</body>
+</html>
